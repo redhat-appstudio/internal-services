@@ -20,10 +20,14 @@ import (
 	"context"
 	"github.com/go-logr/logr"
 	"github.com/redhat-appstudio/internal-services/api/v1alpha1"
+	"github.com/redhat-appstudio/internal-services/loader"
+	"github.com/redhat-appstudio/internal-services/tekton"
 	"github.com/redhat-appstudio/operator-goodies/reconciler"
+	tektonv1beta1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -67,10 +71,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	adapter := NewAdapter(internalRequest, r.Client, r.InternalClient, ctx, logger)
+	adapter := NewAdapter(ctx, r.Client, r.InternalClient, internalRequest, loader.NewLoader(), logger)
 
 	return reconciler.ReconcileHandler([]reconciler.ReconcileOperation{
-		adapter.EnsureReconcileOperationIsLogged,
+		adapter.EnsureRequestIsHandled,
+		adapter.EnsureStatusIsTracked,
 	})
 }
 
@@ -89,5 +94,6 @@ func setupControllerWithManager(mgr ctrl.Manager, remoteCluster cluster.Cluster,
 			source.NewKindWithCache(&v1alpha1.InternalRequest{}, remoteCluster.GetCache()),
 			&handler.EnqueueRequestForObject{},
 		).
+		Owns(&tektonv1beta1.PipelineRun{}, builder.WithPredicates(tekton.PipelineRunSucceededPredicate())).
 		Complete(reconciler)
 }

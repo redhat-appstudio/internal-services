@@ -20,32 +20,102 @@ import (
 	"context"
 	"github.com/go-logr/logr"
 	"github.com/redhat-appstudio/internal-services/api/v1alpha1"
+	"github.com/redhat-appstudio/internal-services/loader"
+	"github.com/redhat-appstudio/internal-services/tekton"
 	"github.com/redhat-appstudio/operator-goodies/reconciler"
+	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"knative.dev/pkg/apis"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Adapter holds the objects needed to reconcile a Release.
 type Adapter struct {
 	client          client.Client
-	context         context.Context
+	ctx             context.Context
 	internalClient  client.Client
 	internalRequest *v1alpha1.InternalRequest
+	loader          loader.ObjectLoader
 	logger          logr.Logger
 }
 
 // NewAdapter creates and returns an Adapter instance.
-func NewAdapter(internalRequest *v1alpha1.InternalRequest, client, internalClient client.Client, context context.Context, logger logr.Logger) *Adapter {
+func NewAdapter(ctx context.Context, client, internalClient client.Client, internalRequest *v1alpha1.InternalRequest, loader loader.ObjectLoader, logger logr.Logger) *Adapter {
 	return &Adapter{
 		client:          client,
-		context:         context,
+		ctx:             ctx,
 		internalRequest: internalRequest,
 		internalClient:  internalClient,
+		loader:          loader,
 		logger:          logger,
 	}
 }
 
-func (a *Adapter) EnsureReconcileOperationIsLogged() (reconciler.OperationResult, error) {
-	a.logger.Info("InternalRequest successfully watched")
+func (a *Adapter) EnsureRequestIsHandled() (reconciler.OperationResult, error) {
+	pipelineRun, err := a.loader.GetInternalRequestPipelineRun(a.ctx, a.internalClient, a.internalRequest)
+	if err != nil && !errors.IsNotFound(err) {
+		return reconciler.RequeueWithError(err)
+	}
+
+	if pipelineRun == nil || !a.internalRequest.HasStarted() {
+		if pipelineRun == nil {
+			pipelineRun := tekton.NewPipelineRun(a.internalRequest)
+			err := a.internalClient.Create(a.ctx, pipelineRun)
+			if err != nil {
+				return reconciler.RequeueWithError(err)
+			}
+
+			a.logger.Info("Created internal request PipelineRun",
+				"PipelineRun.Name", pipelineRun.Name, "PipelineRun.Namespace", pipelineRun.Namespace)
+		}
+
+		return reconciler.RequeueOnErrorOrContinue(a.registerInternalRequestStatus(pipelineRun))
+	}
 
 	return reconciler.ContinueProcessing()
+}
+
+func (a *Adapter) EnsureStatusIsTracked() (reconciler.OperationResult, error) {
+	pipelineRun, err := a.loader.GetInternalRequestPipelineRun(a.ctx, a.internalClient, a.internalRequest)
+	if err != nil && !errors.IsNotFound(err) {
+		return reconciler.RequeueWithError(err)
+	}
+
+	if pipelineRun != nil {
+		return reconciler.RequeueOnErrorOrContinue(a.registerInternalRequestPipelineRunStatus(pipelineRun))
+	}
+
+	return reconciler.ContinueProcessing()
+}
+
+func (a *Adapter) registerInternalRequestStatus(pipelineRun *v1beta1.PipelineRun) error {
+	if pipelineRun == nil {
+		return nil
+	}
+
+	patch := client.MergeFrom(a.internalRequest.DeepCopy())
+
+	a.internalRequest.Status.PipelineRun = pipelineRun.Name
+	a.internalRequest.MarkRunning()
+
+	return a.client.Status().Patch(a.ctx, a.internalRequest, patch)
+}
+
+func (a *Adapter) registerInternalRequestPipelineRunStatus(pipelineRun *v1beta1.PipelineRun) error {
+	if pipelineRun != nil && pipelineRun.IsDone() {
+		patch := client.MergeFrom(a.internalRequest.DeepCopy())
+
+		a.internalRequest.Status.Results = pipelineRun.Status.PipelineResults
+
+		condition := pipelineRun.Status.GetCondition(apis.ConditionSucceeded)
+		if condition.IsTrue() {
+			a.internalRequest.MarkSucceeded()
+		} else {
+			a.internalRequest.MarkFailed(condition.Message)
+		}
+
+		return a.client.Status().Patch(a.ctx, a.internalRequest, patch)
+	}
+
+	return nil
 }

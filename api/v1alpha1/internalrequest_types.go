@@ -17,8 +17,32 @@ limitations under the License.
 package v1alpha1
 
 import (
+	tektonv1beta1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"time"
 )
+
+// HandlingReason represents a reason for the release "InternalRequestSucceeded" condition.
+type HandlingReason string
+
+const (
+	// conditionType is the type used when setting a status condition
+	conditionType string = "InternalRequestSucceeded"
+
+	// InternalRequestFailed is the reason set when the release PipelineRun failed
+	InternalRequestFailed HandlingReason = "Failed"
+
+	// InternalRequestRunning is the reason set when the PipelineRun starts running
+	InternalRequestRunning HandlingReason = "Running"
+
+	// InternalRequestSucceeded is the reason set when the PipelineRun has succeeded
+	InternalRequestSucceeded HandlingReason = "Succeeded"
+)
+
+func (rr HandlingReason) String() string {
+	return string(rr)
+}
 
 // InternalRequestSpec defines the desired state of InternalRequest
 type InternalRequestSpec struct {
@@ -35,14 +59,27 @@ type InternalRequestSpec struct {
 
 // InternalRequestStatus defines the observed state of InternalRequest
 type InternalRequestStatus struct {
+	// StartTime is the time when the Release PipelineRun was created and set to run
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// CompletionTime is the time the Release PipelineRun completed
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
+
 	// Conditions represent the latest available observations for the internalrequest
 	// +optional
 	Conditions []metav1.Condition `json:"conditions"`
 
-	// Results is the list of optional results as seen in the Tekton pipeline
+	// PipelineRun is the Tekton PipelineRun that executed the request
+	// +kubebuilder:validation:Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+	// +optional
+	PipelineRun string `json:"pipelineRun"`
+
+	// Results is the list of optional results as seen in the Tekton PipelineRun
 	// kubebuilder:pruning:PreserveUnknownFields
 	// +optional
-	Results map[string]string `json:"results,omitempty"`
+	Results []tektonv1beta1.PipelineRunResult `json:"results,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -55,6 +92,68 @@ type InternalRequest struct {
 
 	Spec   InternalRequestSpec   `json:"spec,omitempty"`
 	Status InternalRequestStatus `json:"status,omitempty"`
+}
+
+func (ir *InternalRequest) HasCompleted() bool {
+	condition := meta.FindStatusCondition(ir.Status.Conditions, conditionType)
+	return condition != nil && condition.Status != metav1.ConditionUnknown && ir.Status.CompletionTime != nil
+}
+
+func (ir *InternalRequest) HasFailed() bool {
+	return meta.IsStatusConditionFalse(ir.Status.Conditions, conditionType)
+}
+
+func (ir *InternalRequest) HasStarted() bool {
+	condition := meta.FindStatusCondition(ir.Status.Conditions, conditionType)
+	return condition != nil && condition.Status != metav1.ConditionUnknown && ir.Status.StartTime != nil
+}
+
+func (ir *InternalRequest) HasSucceeded() bool {
+	return meta.IsStatusConditionTrue(ir.Status.Conditions, conditionType)
+}
+
+func (ir *InternalRequest) MarkFailed(message string) {
+	if ir.HasCompleted() {
+		return
+	}
+
+	ir.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	ir.setStatusConditionWithMessage(conditionType, metav1.ConditionFalse, InternalRequestFailed, message)
+}
+
+func (ir *InternalRequest) MarkRunning() {
+	if ir.HasStarted() {
+		return
+	}
+
+	ir.Status.StartTime = &metav1.Time{Time: time.Now()}
+	ir.setStatusCondition(conditionType, metav1.ConditionUnknown, InternalRequestRunning)
+}
+
+func (ir *InternalRequest) MarkSucceeded() {
+	if ir.HasCompleted() {
+		return
+	}
+
+	ir.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	ir.setStatusCondition(conditionType, metav1.ConditionTrue, InternalRequestSucceeded)
+}
+
+// SetCondition creates a new condition with the given conditionType, status and reason. Then, it sets this new condition,
+// unsetting previous conditions with the same type as necessary.
+func (ir *InternalRequest) setStatusCondition(conditionType string, status metav1.ConditionStatus, reason HandlingReason) {
+	ir.setStatusConditionWithMessage(conditionType, status, reason, "")
+}
+
+// SetCondition creates a new condition with the given conditionType, status, reason and message. Then, it sets this new condition,
+// unsetting previous conditions with the same type as necessary.
+func (ir *InternalRequest) setStatusConditionWithMessage(conditionType string, status metav1.ConditionStatus, reason HandlingReason, message string) {
+	meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
+		Type:    conditionType,
+		Status:  status,
+		Reason:  reason.String(),
+		Message: message,
+	})
 }
 
 //+kubebuilder:object:root=true

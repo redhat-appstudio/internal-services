@@ -52,6 +52,10 @@ spec:
           status:
             description: InternalRequestStatus defines the observed state of InternalRequest
             properties:
+              completionTime:
+                description: CompletionTime is the time the Release PipelineRun completed
+                format: date-time
+                type: string
               conditions:
                 description: Conditions represent the latest available observations
                   for the internalrequest
@@ -122,12 +126,57 @@ spec:
                   - type
                   type: object
                 type: array
+              pipelineRun:
+                description: PipelineRun is the Tekton PipelineRun that executed the
+                  request
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
               results:
-                additionalProperties:
-                  type: string
                 description: Results is the list of optional results as seen in the
-                  Tekton pipeline kubebuilder:pruning:PreserveUnknownFields
-                type: object
+                  Tekton PipelineRun kubebuilder:pruning:PreserveUnknownFields
+                items:
+                  description: PipelineRunResult used to describe the results of a
+                    pipeline
+                  properties:
+                    name:
+                      description: Name is the result's name as declared by the Pipeline
+                      type: string
+                    value:
+                      description: Value is the result returned from the execution
+                        of this PipelineRun
+                      properties:
+                        arrayVal:
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        objectVal:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        stringVal:
+                          type: string
+                        type:
+                          description: ParamType indicates the type of an input parameter;
+                            Used to distinguish between a single string and an array
+                            of strings.
+                          type: string
+                      required:
+                      - arrayVal
+                      - objectVal
+                      - stringVal
+                      - type
+                      type: object
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+              startTime:
+                description: StartTime is the time when the Release PipelineRun was
+                  created and set to run
+                format: date-time
+                type: string
             type: object
         type: object
     served: true
