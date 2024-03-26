@@ -18,9 +18,10 @@ package main
 
 import (
 	"flag"
-	"github.com/redhat-appstudio/operator-toolkit/controller"
-	"go.uber.org/zap/zapcore"
 	"os"
+
+	"github.com/konflux-ci/operator-toolkit/controller"
+	"go.uber.org/zap/zapcore"
 
 	tektonv1beta1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
